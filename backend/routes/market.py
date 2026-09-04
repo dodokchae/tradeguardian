@@ -11,6 +11,18 @@ router = APIRouter(
     tags=["Market"],
 )
 
+@router.get("/assets")
+def get_available_assets():
+    try:
+        return get_assets()
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unable to retrieve Alpaca assets: {str(error)}",
+        )
+
+
 @router.get("/{symbol}")
 def get_market_data(
     symbol: str,
@@ -42,15 +54,4 @@ def get_market_data(
                 f"Unable to retrieve market data "
                 f"for {symbol}: {str(error)}"
             ),
-        )
-
-@router.get("/assets")
-def get_available_assets():
-    try:
-        return get_assets()
-
-    except Exception as error:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to retrieve Alpaca assets: {str(error)}",
         )

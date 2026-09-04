@@ -9,6 +9,11 @@ from routes.history import router as history_router
 from routes.assets import router as assets_router
 from routes.live import router as live_router
 from routes.agents import router as agents_router
+from routes.mcp import router as mcp_router
+from routes.trade import router as trade_router
+from routes.positions import router as positions_router
+from routes.tradeguardian import router as tradeguardian_router
+from routes.settings import router as settings_router
 
 
 
@@ -21,17 +26,14 @@ initialize_database()
 
 app = FastAPI(
     title="TradeGuardian API",
-    description="AI-powered trade verification and risk control system",
-    version="0.1.0",
+    description="AI-powered trade verification, Alpaca MCP execution, and risk control system",
+    version="0.2.0",
 )
 
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://supreme-fortnight-g47pp96xvg7xh9wr-3000.app.github.dev",
-        "http://localhost:3000",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,6 +48,11 @@ app.include_router(history_router)
 app.include_router(assets_router)
 app.include_router(live_router)
 app.include_router(agents_router)
+app.include_router(mcp_router)
+app.include_router(trade_router)
+app.include_router(positions_router)
+app.include_router(tradeguardian_router)
+app.include_router(settings_router)
 
 
 @app.get("/")

@@ -27,5 +27,37 @@ def initialize_database() -> None:
         """
     )
 
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS trade_orders (
+            order_id TEXT PRIMARY KEY,
+            client_order_id TEXT,
+            symbol TEXT NOT NULL,
+            option_symbol TEXT,
+            side TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            order_type TEXT NOT NULL,
+            limit_price REAL,
+            status TEXT NOT NULL,
+            filled_avg_price REAL,
+            filled_qty INTEGER,
+            submitted_at TEXT NOT NULL,
+            raw_response TEXT
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            agent_name TEXT NOT NULL,
+            action TEXT NOT NULL,
+            details TEXT NOT NULL
+        )
+        """
+    )
+
     connection.commit()
     connection.close()

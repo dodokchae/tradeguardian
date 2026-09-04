@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 
 from services.alpaca_service import get_account
 
@@ -9,7 +9,9 @@ router = APIRouter(
 
 
 @router.get("/")
-def read_account():
+def read_account(response: Response):
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     try:
         account = get_account()
 
@@ -18,6 +20,7 @@ def read_account():
             "status": str(account.status),
             "cash": str(account.cash),
             "equity": str(account.equity),
+            "last_equity": str(getattr(account, "last_equity", account.equity)),
             "buying_power": str(account.buying_power),
         }
 

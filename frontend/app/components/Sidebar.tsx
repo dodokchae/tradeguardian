@@ -1,18 +1,114 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 export interface SidebarProps {
-  activeTab: 'analysis' | 'ai_opportunity';
-  onNavigate?: (tab: 'analysis' | 'ai_opportunity') => void;
+  activeTab?: 'dashboard' | 'analysis' | 'ai_opportunity' | 'positions' | 'settings';
+  onNavigate?: (tab: 'dashboard' | 'analysis' | 'ai_opportunity' | 'positions' | 'settings') => void;
+  equity?: string | null;
+  buyingPower?: string | null;
+  openPositions?: number | null;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onNavigate }) => {
-  return (
-    <aside
-      className="w-64 border-r border-[#2b2a2c] bg-[#131315] flex flex-col shrink-0 custom-scrollbar h-full"
-      style={{ width: '256px' }}
-    >
+export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onNavigate, equity: equityProp, buyingPower: buyingPowerProp, openPositions: openPositionsProp }) => {
+  // Internal state for self-fetching when props are not provided
+  const [internalEquity, setInternalEquity] = useState<string | null>(null);
+  const [internalBuyingPower, setInternalBuyingPower] = useState<string | null>(null);
+  const [internalOpenPositions, setInternalOpenPositions] = useState<number | null>(null);
+
+  // Self-fetch account data when props aren't supplied
+  useEffect(() => {
+    // If parent is already providing data, skip internal fetching
+    if (equityProp != null) return;
+
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+    async function fetchAccount() {
+      try {
+        const [accRes, portRes] = await Promise.all([
+          fetch(`${backendUrl}/account/`),
+          fetch(`${backendUrl}/portfolio/`),
+        ]);
+        if (accRes.ok) {
+          const accData = await accRes.json();
+          setInternalEquity(accData.equity);
+          setInternalBuyingPower(accData.buying_power);
+        }
+        if (portRes.ok) {
+          const portData = await portRes.json();
+          setInternalOpenPositions(Array.isArray(portData.positions) ? portData.positions.length : 0);
+        }
+      } catch {
+        // Silently fail — show shimmer
+      }
+    }
+    fetchAccount();
+    const interval = setInterval(fetchAccount, 30000);
+
+    const handleAccountUpdate = () => {
+      fetchAccount();
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('tradeguardian:account_updated', handleAccountUpdate);
+    }
+
+    return () => {
+      clearInterval(interval);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('tradeguardian:account_updated', handleAccountUpdate);
+      }
+    };
+  }, [equityProp]);
+
+  // Use props if provided, otherwise fall back to internal state
+  const equity = equityProp ?? internalEquity;
+  const buyingPower = buyingPowerProp ?? internalBuyingPower;
+  const openPositions = openPositionsProp ?? internalOpenPositions;
+
+  const formatDollar = (val: string | null | undefined) => {
+    if (val == null) return null;
+    const num = parseFloat(val);
+    if (isNaN(num)) return val;
+    return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleOpenDrawer = () => setIsMobileDrawerOpen(true);
+    const handleCloseDrawer = () => setIsMobileDrawerOpen(false);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('tradeguardian:open_mobile_drawer', handleOpenDrawer);
+      window.addEventListener('tradeguardian:close_mobile_drawer', handleCloseDrawer);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('tradeguardian:open_mobile_drawer', handleOpenDrawer);
+        window.removeEventListener('tradeguardian:close_mobile_drawer', handleCloseDrawer);
+      }
+    };
+  }, []);
+
+  const navItems: Array<{
+    id: 'dashboard' | 'analysis' | 'ai_opportunity' | 'positions' | 'settings';
+    label: string;
+    mobileLabel: string;
+    icon: string;
+    badge?: { text: string; color: string };
+  }> = [
+    { id: 'dashboard', label: 'Dashboard', mobileLabel: 'Dashboard', icon: 'space_dashboard' },
+    { id: 'analysis', label: 'Trade Analysis', mobileLabel: 'Analysis', icon: 'query_stats' },
+    { id: 'ai_opportunity', label: 'AI Opportunities', mobileLabel: 'AI Opps', icon: 'auto_awesome', badge: { text: 'ALPHA', color: 'purple' } },
+    { id: 'positions', label: 'Position Manager', mobileLabel: 'Positions', icon: 'monitoring', badge: { text: 'P&L', color: 'emerald' } },
+    { id: 'settings', label: 'Settings', mobileLabel: 'Settings', icon: 'settings' },
+  ];
+
+  const handleNavClick = (tab: 'dashboard' | 'analysis' | 'ai_opportunity' | 'positions' | 'settings') => {
+    setIsMobileDrawerOpen(false);
+    onNavigate?.(tab);
+  };
+
+  const renderNavContent = () => (
+    <>
       {/* Brand Header */}
       <div className="p-4 flex items-center justify-between border-b border-[#2b2a2c]/50">
         <div className="flex items-center gap-3">
@@ -26,212 +122,198 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onNavigate }) => {
             <div className="text-[10px] text-[#a1a1aa]">TradeGuardian AI</div>
           </div>
         </div>
-        <svg
-          className="text-[#a1a1aa]"
-          fill="none"
-          height="16"
-          stroke="currentColor"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth="2"
-          viewBox="0 0 24 24"
-          width="16"
-          xmlns="http://www.w3.org/2000/svg"
+        <button
+          type="button"
+          onClick={() => setIsMobileDrawerOpen(false)}
+          className="lg:hidden p-1.5 rounded-lg text-[#a1a1aa] hover:text-white hover:bg-[#27272a] transition-colors"
+          title="Close Navigation"
         >
-          <path d="m6 9 6 6 6-6" />
-        </svg>
+          <span className="material-symbols-outlined text-lg">close</span>
+        </button>
       </div>
 
       {/* Navigation */}
       <nav className="flex-1 py-4 overflow-y-auto custom-scrollbar">
         <ul className="space-y-1">
-          {/* Dashboard */}
-          <li className="px-3">
-            <button
-              type="button"
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#1c1b1d] transition-colors text-left"
-            >
-              <svg fill="none" height="18" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
-                <rect height="9" rx="1" width="7" x="3" y="3" />
-                <rect height="5" rx="1" width="7" x="14" y="3" />
-                <rect height="9" rx="1" width="7" x="14" y="12" />
-                <rect height="5" rx="1" width="7" x="3" y="16" />
-              </svg>
-              <span className="font-medium text-sm">Dashboard</span>
-            </button>
-          </li>
-
-          {/* Trade Analysis Button */}
-          <li className="px-3">
-            <button
-              type="button"
-              onClick={() => onNavigate?.('analysis')}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition-colors text-left ${
-                activeTab === 'analysis'
-                  ? 'bg-[#facc15]/10 border-l-2 border-[#facc15] text-[#facc15]'
-                  : 'text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#1c1b1d]'
-              }`}
-            >
-              <span className="material-symbols-outlined text-[18px]" style={{ fontSize: '18px' }}>
-                query_stats
-              </span>
-              <span className="font-medium text-sm">Trade Analysis</span>
-            </button>
-          </li>
-
-          {/* Activity Log */}
-          <li className="px-3">
-            <button
-              type="button"
-              className="w-full flex items-center gap-3 px-3 py-2 text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#1c1b1d] rounded-md transition-colors text-left"
-            >
-              <svg fill="none" height="18" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="12" cy="12" r="10" />
-                <polyline points="12 6 12 12 16 14" />
-              </svg>
-              <span className="font-medium text-sm">Activity Log</span>
-            </button>
-          </li>
-
-          {/* AI Opportunities Button */}
-          <li className="px-3">
-            <button
-              type="button"
-              onClick={() => onNavigate?.('ai_opportunity')}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition-colors text-left ${
-                activeTab === 'ai_opportunity'
-                  ? 'bg-[#facc15]/10 border-l-2 border-[#facc15] text-[#facc15]'
-                  : 'text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#1c1b1d]'
-              }`}
-            >
-              <svg fill="none" height="18" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
-                <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
-              </svg>
-              <span className="font-medium text-sm">AI Opportunities</span>
-              <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded border bg-purple-500/10 border-purple-500/30 text-purple-400">
-                NEW
-              </span>
-            </button>
-          </li>
-
-          {/* Settings */}
-          <li className="px-3">
-            <button
-              type="button"
-              className="w-full flex items-center gap-3 px-3 py-2 text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#1c1b1d] rounded-md transition-colors text-left"
-            >
-              <svg fill="none" height="18" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-              <span className="font-medium text-sm">Settings</span>
-            </button>
-          </li>
+          {navItems.map((item) => {
+            const isActive = activeTab === item.id;
+            return (
+              <li key={item.id} className="px-3">
+                <button
+                  type="button"
+                  onClick={() => handleNavClick(item.id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors text-left cursor-pointer ${
+                    isActive
+                      ? 'bg-[#facc15]/10 border-l-2 border-[#facc15] text-[#facc15]'
+                      : 'text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#1c1b1d]'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[18px]" style={{ fontSize: '18px' }}>
+                    {item.icon}
+                  </span>
+                  <span className="font-medium text-sm">{item.label}</span>
+                  {item.badge && (
+                    <span
+                      className={`ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                        item.badge.color === 'purple'
+                          ? 'bg-purple-500/10 border-purple-500/30 text-purple-400'
+                          : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                      }`}
+                    >
+                      {item.badge.text}
+                    </span>
+                  )}
+                  {isActive && !item.badge && (
+                    <span className="ml-auto w-1.5 h-1.5 rounded-full bg-[#facc15] animate-pulse" />
+                  )}
+                </button>
+              </li>
+            );
+          })}
 
           <li className="my-4 border-t border-[#2b2a2c]/50 mx-4" />
 
-          {/* Analysis History */}
-          <li className="px-3">
-            <div className="flex items-center gap-3 px-3 py-2 text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#1c1b1d] rounded-md transition-colors cursor-default">
-              <svg fill="none" height="18" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
-                <path d="M3 3v18h18" />
-                <path d="M18 17V9" />
-                <path d="M13 17V5" />
-                <path d="M8 17v-3" />
-              </svg>
-              <span className="font-medium text-sm">Analysis History</span>
-              <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500 text-red-500">
-                UNAVAILABLE
-              </span>
+          {/* Institutional Status Badge */}
+          <li className="px-4 py-2">
+            <div className="bg-[#0e0e10] p-3 rounded-xl border border-[#2b2a2c]/80 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-[#a1a1aa] uppercase tracking-wider">FastMCP Swarm</span>
+                <span className="flex items-center gap-1 text-[9px] text-emerald-400 font-mono font-bold bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/30">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  ONLINE
+                </span>
+              </div>
+              <div className="text-[11px] text-[#71717a] leading-tight">
+                4 Autonomous Agents certified for institutional risk enforcement.
+              </div>
             </div>
           </li>
 
-          {/* Positions */}
-          <li className="px-3">
-            <div className="flex items-center gap-3 px-3 py-2 text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#1c1b1d] rounded-md transition-colors cursor-default">
-              <svg fill="none" height="18" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="12" cy="12" r="10" />
-                <circle cx="12" cy="12" r="4" />
-              </svg>
-              <span className="font-medium text-sm">Positions</span>
-              <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500 text-red-500">
-                UNAVAILABLE
-              </span>
-            </div>
-          </li>
-
-          {/* Orders */}
-          <li className="px-3">
-            <div className="flex items-center gap-3 px-3 py-2 text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#1c1b1d] rounded-md transition-colors cursor-default">
-              <svg fill="none" height="18" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
-                <line x1="8" x2="21" y1="6" y2="6" />
-                <line x1="8" x2="21" y1="12" y2="12" />
-                <line x1="8" x2="21" y1="18" y2="18" />
-                <line x1="3" x2="3.01" y1="6" y2="6" />
-                <line x1="3" x2="3.01" y1="12" y2="12" />
-                <line x1="3" x2="3.01" y1="18" y2="18" />
-              </svg>
-              <span className="font-medium text-sm">Orders</span>
-              <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500 text-red-500">
-                UNAVAILABLE
-              </span>
-            </div>
-          </li>
-
-          {/* Performance */}
-          <li className="px-3">
-            <div className="flex items-center gap-3 px-3 py-2 text-[#a1a1aa] hover:text-[#e4e4e7] hover:bg-[#1c1b1d] rounded-md transition-colors cursor-default">
-              <svg fill="none" height="18" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
-                <path d="M3 3v18h18" />
-                <path d="m19 9-5 5-4-4-3 3" />
-              </svg>
-              <span className="font-medium text-sm">Performance</span>
-              <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500 text-red-500">
-                UNAVAILABLE
-              </span>
-            </div>
-          </li>
-
-          <li className="my-4 border-t border-[#2b2a2c]/50 mx-4" />
+          <li className="my-2 border-t border-[#2b2a2c]/50 mx-4" />
         </ul>
 
         {/* Account Info */}
         <div className="px-6 py-4">
-          <h3 className="text-[10px] font-bold text-[#a1a1aa] mb-4 uppercase tracking-widest">
-            ACCOUNT
+          <h3 className="text-[10px] font-bold text-[#a1a1aa] mb-4 uppercase tracking-widest flex items-center justify-between">
+            <span>ACCOUNT OVERVIEW</span>
+            <span className="text-[9px] text-emerald-400 font-mono">PAPER</span>
           </h3>
           <div className="space-y-4">
             <div>
               <div className="text-xs text-[#a1a1aa] mb-1">Total Equity</div>
-              <div className="text-xl font-bold font-sans text-[#e4e4e7]">$100,000.00</div>
+              {formatDollar(equity) ? (
+                <div className="text-xl font-bold font-mono text-[#e4e4e7]">{formatDollar(equity)}</div>
+              ) : (
+                <div className="h-7 w-36 bg-[#27272a] rounded animate-pulse" />
+              )}
             </div>
             <div>
               <div className="text-xs text-[#a1a1aa] mb-1">Buying Power</div>
-              <div className="text-xl font-bold font-sans text-[#e4e4e7]">$400,000.00</div>
+              {formatDollar(buyingPower) ? (
+                <div className="text-xl font-bold font-mono text-[#e4e4e7]">{formatDollar(buyingPower)}</div>
+              ) : (
+                <div className="h-7 w-36 bg-[#27272a] rounded animate-pulse" />
+              )}
             </div>
             <div>
               <div className="text-xs text-[#a1a1aa] mb-1">Open Positions</div>
-              <div className="text-[15px] font-bold font-sans text-[#e4e4e7]">0</div>
+              {openPositions != null ? (
+                <div className="text-[15px] font-bold font-mono text-[#e4e4e7]">{openPositions} Holdings</div>
+              ) : (
+                <div className="h-5 w-8 bg-[#27272a] rounded animate-pulse" />
+              )}
             </div>
           </div>
         </div>
       </nav>
 
-      {/* Collapse button */}
+      {/* Footer Info */}
       <div className="p-4 border-t border-[#2b2a2c] mt-auto">
+        <div className="flex items-center justify-between text-xs text-[#71717a]">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            Alpaca v2 Feed
+          </span>
+          <span className="font-mono text-[10px]">v3.2.0</span>
+        </div>
+      </div>
+    </>
+  );
+
+  return (
+    <>
+      {/* 1. Desktop Persistent Sidebar (>= 1024px) */}
+      <aside
+        className="w-64 border-r border-[#2b2a2c] bg-[#131315] hidden lg:flex flex-col shrink-0 custom-scrollbar h-full"
+        style={{ width: '256px' }}
+      >
+        {renderNavContent()}
+      </aside>
+
+      {/* 2. Mobile Slide-Over Drawer (< 1024px) */}
+      {isMobileDrawerOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex">
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm transition-opacity"
+            onClick={() => setIsMobileDrawerOpen(false)}
+          />
+
+          {/* Drawer Panel */}
+          <div className="relative w-72 max-w-[85vw] bg-[#131315] border-r border-[#2b2a2c] flex flex-col h-full z-10 shadow-2xl animate-in slide-in-from-left duration-200">
+            {renderNavContent()}
+          </div>
+        </div>
+      )}
+
+      {/* 3. Mobile / Tablet Fixed Bottom Navigation Bar (< 1024px) */}
+      <nav
+        aria-label="Mobile Navigation"
+        className="fixed bottom-0 inset-x-0 bg-[#131315]/95 backdrop-blur-lg border-t border-[#2b2a2c] flex items-center justify-around py-1.5 px-2 z-40 lg:hidden shadow-[0_-4px_20px_rgba(0,0,0,0.6)]"
+      >
+        {navItems.slice(0, 4).map((item) => {
+          const isActive = activeTab === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => handleNavClick(item.id)}
+              className={`flex-1 flex flex-col items-center justify-center py-1 px-1 rounded-lg transition-all cursor-pointer ${
+                isActive ? 'text-[#facc15]' : 'text-[#71717a] hover:text-[#e4e4e7]'
+              }`}
+            >
+              <span
+                className={`material-symbols-outlined text-xl transition-transform ${
+                  isActive ? 'scale-110' : ''
+                }`}
+              >
+                {item.icon}
+              </span>
+              <span className={`text-[10px] mt-0.5 tracking-tight font-medium ${isActive ? 'font-bold' : ''}`}>
+                {item.mobileLabel}
+              </span>
+              {isActive && <span className="w-1 h-1 rounded-full bg-[#facc15] mt-0.5" />}
+            </button>
+          );
+        })}
+
+        {/* 5th Button: Drawer & Account Trigger */}
         <button
           type="button"
-          className="flex items-center justify-between w-full px-2 py-2 text-sm text-[#a1a1aa] hover:text-[#e4e4e7] rounded transition-colors"
+          onClick={() => setIsMobileDrawerOpen(!isMobileDrawerOpen)}
+          className={`flex-1 flex flex-col items-center justify-center py-1 px-1 rounded-lg transition-all cursor-pointer ${
+            isMobileDrawerOpen ? 'text-[#facc15]' : 'text-[#71717a] hover:text-[#e4e4e7]'
+          }`}
         >
-          <div className="flex items-center gap-3 px-2">
-            <svg fill="none" height="16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" width="16" xmlns="http://www.w3.org/2000/svg">
-              <path d="m15 18-6-6 6-6" />
-            </svg>
-            <span className="font-medium">Collapse</span>
-          </div>
+          <span className="material-symbols-outlined text-xl">
+            {isMobileDrawerOpen ? 'close' : 'menu'}
+          </span>
+          <span className="text-[10px] mt-0.5 tracking-tight font-medium">
+            Account
+          </span>
         </button>
-      </div>
-    </aside>
+      </nav>
+    </>
   );
 };
 

@@ -29,3 +29,6 @@ uvicorn==0.52.4
 uvloop==0.22.1
 watchfiles==1.2.0
 websockets==17.0.1
+fastmcp[server]>=3.2.0
+alpaca-mcp-server>=0.2.1
+pywin32>=306; sys_platform == 'win32'

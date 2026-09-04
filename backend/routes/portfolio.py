@@ -46,3 +46,37 @@ def read_portfolio():
             status_code=500,
             detail=f"Failed to retrieve portfolio: {str(error)}",
         )
+
+
+@router.get("/history")
+def read_portfolio_history(period: str = "1D"):
+    """Fetch mark-to-market portfolio history from Alpaca API."""
+    import requests
+    from core.config import settings
+
+    try:
+        url = f"{settings.ALPACA_BASE_URL}/v2/account/portfolio/history"
+        tf_map = {
+            "1D": "15Min",
+            "1W": "1H",
+            "1M": "1D",
+            "ALL": "1D",
+        }
+        alpaca_period = "all" if period == "ALL" else period
+        timeframe = tf_map.get(period, "15Min")
+
+        headers = {
+            "APCA-API-KEY-ID": settings.ALPACA_API_KEY,
+            "APCA-API-SECRET-KEY": settings.ALPACA_SECRET_KEY,
+        }
+        params = {
+            "period": alpaca_period,
+            "timeframe": timeframe,
+            "intraday_reporting": "market_hours",
+        }
+        res = requests.get(url, headers=headers, params=params, timeout=8)
+        if res.ok:
+            return res.json()
+        return {"error": res.text, "status_code": res.status_code}
+    except Exception as error:
+        return {"error": str(error)}

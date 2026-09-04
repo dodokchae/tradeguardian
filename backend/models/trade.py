@@ -1,6 +1,7 @@
 from enum import Enum
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TradeSide(str, Enum):
@@ -38,3 +39,20 @@ class TradeProposal(BaseModel):
         default=None,
         gt=0,
     )
+
+    order_type: str | None = Field(
+        default=None,
+        description="Optional order type (e.g. Market, Limit)",
+    )
+
+    @field_validator("side", mode="before")
+    @classmethod
+    def normalize_side(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if "buy" in v or "long" in v:
+                return "buy"
+            elif "sell" in v or "short" in v:
+                return "sell"
+            return v
+        return value
