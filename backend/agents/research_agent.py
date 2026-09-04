@@ -444,8 +444,8 @@ def scan_market(
 
     opportunities = []
 
-    # Parallelize analysis across symbols
-    max_workers = min(len(watchlist), 20)
+    # Parallelize analysis across symbols with throttled concurrency (4 workers) to respect Alpaca rate limits
+    max_workers = min(len(watchlist), 4)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_symbol = {
             executor.submit(analyze_symbol, s): s

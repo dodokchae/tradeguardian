@@ -239,8 +239,8 @@ def run_tradeguardian(
 
     results = []
 
-    # Run opportunity options contract selection & risk evaluation concurrently
-    max_workers = min(len(target_opportunities), 16)
+    # Run opportunity options contract selection & risk evaluation concurrently with rate-limit protection
+    max_workers = min(len(target_opportunities), 4)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(_evaluate_single_opportunity, opp, shared_account, shared_positions): opp

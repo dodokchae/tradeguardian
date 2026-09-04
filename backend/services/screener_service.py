@@ -60,12 +60,14 @@ EXPANDED_CANDIDATE_POOL = [
 _SCREENER_CACHE: list[dict[str, Any]] = []
 _SCREENER_CACHE_TIME: float = 0.0
 _SCREENER_LOCK = threading.Lock()
-SCREENER_CACHE_TTL = 180  # 3 minutes
+SCREENER_CACHE_TTL = 300  # 5 minutes
 
 
 def _evaluate_candidate(item: dict[str, Any], min_rvol: float) -> dict[str, Any] | None:
     sym = item["symbol"]
     try:
+        # Pacing delay to avoid burst rate limits across worker threads
+        time.sleep(0.04)
         bars = get_market_bars(sym, timeframe="1M")
         if not bars or len(bars) < 5:
             return None
@@ -115,7 +117,7 @@ def get_dynamic_high_volume_candidates(
     """
     Dynamically screens the market candidate pool for assets experiencing
     elevated relative volume (RVol), price expansion, and institutional momentum.
-    Combines both high-beta US equities and liquid 24/7 crypto leaders in parallel.
+    Combines both high-beta US equities and liquid 24/7 crypto leaders with rate-limit protection.
     """
     global _SCREENER_CACHE, _SCREENER_CACHE_TIME
 
@@ -130,7 +132,8 @@ def get_dynamic_high_volume_candidates(
     ]
 
     candidates = []
-    max_workers = min(len(pool), 16)
+    # Moderate concurrency (4 workers) to respect Alpaca's 200 req/min rate limit
+    max_workers = min(len(pool), 4)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_item = {
             executor.submit(_evaluate_candidate, item, min_rvol): item
@@ -141,11 +144,17 @@ def get_dynamic_high_volume_candidates(
             if res is not None:
                 candidates.append(res)
 
-    # Sort descending by institutional momentum score
-    ranked = sorted(candidates, key=lambda c: c["momentum_score"], reverse=True)
+    if candidates:
+        # Sort descending by institutional momentum score
+        ranked = sorted(candidates, key=lambda c: c["momentum_score"], reverse=True)
+        with _SCREENER_LOCK:
+            _SCREENER_CACHE = ranked
+            _SCREENER_CACHE_TIME = time.time()
+        return ranked[:limit]
 
+    # Fallback to previously cached candidates if any API throttling occurred
     with _SCREENER_LOCK:
-        _SCREENER_CACHE = ranked
-        _SCREENER_CACHE_TIME = time.time()
+        if _SCREENER_CACHE:
+            return _SCREENER_CACHE[:limit]
 
-    return ranked[:limit]
+    return []

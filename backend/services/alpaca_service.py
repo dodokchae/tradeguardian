@@ -81,6 +81,12 @@ crypto_data_client = CryptoHistoricalDataClient(
 _SNAPSHOT_CACHE: dict[str, dict] = {}
 _SNAPSHOT_CACHE_TIME: float = 0.0
 
+import random
+_BARS_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_BARS_CACHE_LOCK = threading.Lock()
+_BARS_LAST_REQ_TIME: float = 0.0
+_BARS_REQ_LOCK = threading.Lock()
+
 POPULAR_MARKET_SYMBOLS = [
     {"symbol": "AAPL", "name": "Apple Inc.", "exchange": "NASDAQ", "asset_class": "us_equity"},
     {"symbol": "NVDA", "name": "NVIDIA Corporation", "exchange": "NASDAQ", "asset_class": "us_equity"},
@@ -693,8 +699,24 @@ def get_market_bars(
     symbol: str,
     timeframe: str = "1M",
 ):
-    symbol = symbol.upper()
-    timeframe = timeframe.upper()
+    symbol = symbol.upper().strip()
+    timeframe = timeframe.upper().strip()
+    cache_key = f"{symbol}_{timeframe}"
+
+    # Cache TTL: daily/multi-month bars change slowly (5 min), intraday bars refresh faster (1-2 min)
+    if timeframe == "1D":
+        cache_ttl = 60.0
+    elif timeframe == "5D":
+        cache_ttl = 120.0
+    else:  # 1M, 3M, 1Y
+        cache_ttl = 300.0
+
+    now = time.time()
+    with _BARS_CACHE_LOCK:
+        if cache_key in _BARS_CACHE:
+            cached_time, cached_bars = _BARS_CACHE[cache_key]
+            if now - cached_time < cache_ttl and len(cached_bars) > 0:
+                return cached_bars
 
     end = datetime.now(timezone.utc)
 
@@ -761,16 +783,6 @@ def get_market_bars(
             start=start,
             end=end,
         )
-        try:
-            bars_resp = crypto_data_client.get_crypto_bars(req)
-            data_dict = getattr(bars_resp, "data", bars_resp)
-            if isinstance(data_dict, dict) and crypto_sym in data_dict:
-                raw_bars = list(data_dict[crypto_sym])
-            else:
-                raw_bars = []
-        except Exception as err:
-            logger.warning(f"CryptoBarsRequest failed for {crypto_sym}: {err}")
-            raw_bars = []
     else:
         request = StockBarsRequest(
             symbol_or_symbols=symbol,
@@ -779,18 +791,66 @@ def get_market_bars(
             end=end,
             feed=DataFeed.IEX,
         )
+
+    raw_bars = []
+    max_retries = 3
+    global _BARS_LAST_REQ_TIME
+
+    for attempt in range(max_retries):
+        # Rate-limiting pacing: enforce minimum 65ms gap between outbound bars requests (~15 req/s max)
+        with _BARS_REQ_LOCK:
+            elapsed = time.time() - _BARS_LAST_REQ_TIME
+            if elapsed < 0.065:
+                time.sleep(0.065 - elapsed)
+            _BARS_LAST_REQ_TIME = time.time()
+
         try:
-            bars = stock_data_client.get_stock_bars(
-                request
-            )
-            data_dict = getattr(bars, "data", bars)
-            if isinstance(data_dict, dict) and symbol in data_dict:
-                raw_bars = list(data_dict[symbol])
+            if is_crypto:
+                bars_resp = crypto_data_client.get_crypto_bars(req)
+                data_dict = getattr(bars_resp, "data", bars_resp)
+                if isinstance(data_dict, dict) and crypto_sym in data_dict:
+                    raw_bars = list(data_dict[crypto_sym])
+                else:
+                    raw_bars = []
+                break
             else:
-                raw_bars = []
+                bars = stock_data_client.get_stock_bars(request)
+                data_dict = getattr(bars, "data", bars)
+                if isinstance(data_dict, dict) and symbol in data_dict:
+                    raw_bars = list(data_dict[symbol])
+                else:
+                    raw_bars = []
+                break
         except Exception as err:
-            logger.warning(f"StockBarsRequest failed for {symbol}: {err}")
-            raw_bars = []
+            err_msg = str(err).lower()
+            if "too many requests" in err_msg or "429" in err_msg:
+                if attempt < max_retries - 1:
+                    backoff = (attempt + 1) * 0.75 + random.uniform(0.1, 0.4)
+                    logger.warning(f"Alpaca rate limit for {symbol} ({timeframe}), backing off {backoff:.2f}s (attempt {attempt+1}/{max_retries})")
+                    time.sleep(backoff)
+                    continue
+                else:
+                    logger.warning(f"Alpaca rate limit persisted for {symbol} after {max_retries} attempts: {err}")
+                    # Gracefully return stale cached data if available
+                    with _BARS_CACHE_LOCK:
+                        if cache_key in _BARS_CACHE:
+                            _, stale_bars = _BARS_CACHE[cache_key]
+                            if stale_bars:
+                                return stale_bars
+                    raw_bars = []
+                    break
+            else:
+                logger.warning(f"Bars request failed for {symbol}: {err}")
+                raw_bars = []
+                break
+
+    if not raw_bars:
+        # Fallback to stale cache if any error occurred
+        with _BARS_CACHE_LOCK:
+            if cache_key in _BARS_CACHE:
+                _, stale_bars = _BARS_CACHE[cache_key]
+                if stale_bars:
+                    return stale_bars
 
     # -----------------------------------------------------
     # 1D
@@ -909,7 +969,7 @@ def get_market_bars(
             if bar.timestamp >= cutoff
         ]
 
-    return [
+    formatted_bars = [
         {
             "timestamp": bar.timestamp.isoformat(),
             "open": float(bar.open),
@@ -920,6 +980,12 @@ def get_market_bars(
         }
         for bar in raw_bars
     ]
+
+    if formatted_bars:
+        with _BARS_CACHE_LOCK:
+            _BARS_CACHE[cache_key] = (time.time(), formatted_bars)
+
+    return formatted_bars
 
 def subtract_months(
     value: datetime,
