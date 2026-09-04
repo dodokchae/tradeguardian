@@ -31,6 +31,7 @@ def initialize_database() -> None:
         """
         CREATE TABLE IF NOT EXISTS trade_orders (
             order_id TEXT PRIMARY KEY,
+            account_id TEXT,
             client_order_id TEXT,
             symbol TEXT NOT NULL,
             option_symbol TEXT,
@@ -46,6 +47,12 @@ def initialize_database() -> None:
         )
         """
     )
+
+    # Safe migration for existing SQLite databases
+    try:
+        connection.execute("ALTER TABLE trade_orders ADD COLUMN account_id TEXT")
+    except Exception:
+        pass
 
     connection.execute(
         """

@@ -42,6 +42,7 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
   const [mcpStatus, setMcpStatus] = useState<McpStatusResponse | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [executedOrders, setExecutedOrders] = useState<any[]>([]);
+  const [activeAccountId, setActiveAccountId] = useState<string>('');
   const [isClosingSymbol, setIsClosingSymbol] = useState<string | null>(null);
   const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -200,6 +201,9 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
       if (res.ok) {
         const data = await res.json();
         setExecutedOrders(Array.isArray(data.recorded_orders) ? data.recorded_orders : []);
+        if (data.account_id) {
+          setActiveAccountId(data.account_id);
+        }
         setLastUpdated(new Date());
       }
     } catch (err) {
@@ -857,6 +861,12 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
                     <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-pulse" />
                     <span>REAL-TIME AUDIT STREAM</span>
                   </div>
+                  {activeAccountId && (
+                    <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#6366f1]/10 border border-[#6366f1]/30 text-[#a5b4fc] text-[10px] font-mono font-medium">
+                      <span className="text-[#818cf8]">ACCOUNT:</span>
+                      <span>{activeAccountId.length > 12 ? `${activeAccountId.slice(0, 8)}...${activeAccountId.slice(-4)}` : activeAccountId}</span>
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-[10px] text-[#a1a1aa] font-mono" suppressHydrationWarning>
@@ -870,7 +880,7 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
 
               {executedOrders.length === 0 ? (
                 <div className="py-8 text-center text-xs text-[#a1a1aa]">
-                  No orders recorded in current session. Submit a trade in the Trade Analysis desk or AI Opportunities to start live audit.
+                  No orders recorded for active Alpaca account{activeAccountId ? ` (${activeAccountId.slice(0, 8)}...)` : ''}. Submit a trade in the Trade Analysis desk or AI Opportunities to start live audit.
                 </div>
               ) : (
                 <div className="overflow-x-auto">

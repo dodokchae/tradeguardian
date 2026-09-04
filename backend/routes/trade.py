@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional, Union
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from core.database import get_connection
@@ -31,9 +31,28 @@ class ExecuteTradeRequest(BaseModel):
     strategy: Optional[str] = Field(default="Options Alpha Agent", description="Options strategy name")
 
 
-def record_order_in_db(order_dict: dict[str, Any], symbol: str, option_symbol: Optional[str], side: str, qty: Union[int, float], order_type: str, limit_price: Optional[float]):
-    """Persist order metadata into SQLite trade_orders."""
+def record_order_in_db(
+    order_dict: dict[str, Any],
+    symbol: str,
+    option_symbol: Optional[str],
+    side: str,
+    qty: Union[int, float],
+    order_type: str,
+    limit_price: Optional[float],
+    account_id: Optional[str] = None,
+):
+    """Persist order metadata into SQLite trade_orders, isolating by Alpaca account_id."""
     try:
+        if not account_id:
+            try:
+                acc = get_account()
+                if isinstance(acc, dict):
+                    account_id = str(acc.get("id") or "").strip()
+                else:
+                    account_id = str(getattr(acc, "id", "") or "").strip()
+            except Exception:
+                account_id = None
+
         conn = get_connection()
         order_id = str(order_dict.get("id") or order_dict.get("order_id") or uuid4())
         client_order_id = str(order_dict.get("client_order_id", ""))
@@ -45,13 +64,14 @@ def record_order_in_db(order_dict: dict[str, Any], symbol: str, option_symbol: O
         conn.execute(
             """
             INSERT OR REPLACE INTO trade_orders (
-                order_id, client_order_id, symbol, option_symbol, side,
+                order_id, account_id, client_order_id, symbol, option_symbol, side,
                 quantity, order_type, limit_price, status,
                 filled_avg_price, filled_qty, submitted_at, raw_response
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 order_id,
+                account_id,
                 client_order_id,
                 symbol.upper(),
                 option_symbol.upper() if option_symbol else None,
@@ -320,18 +340,39 @@ async def cancel_trade_order(order_id: str):
 
 
 @router.get("/orders")
-def get_order_history(limit: int = 50):
+def get_order_history(response: Response, limit: int = 50):
     """
     Retrieve recent trade order history from SQLite audit storage and Alpaca.
+    Strictly isolated to the currently authenticated Alpaca account API.
     Syncs live statuses from Alpaca into SQLite.
     """
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
+    current_account_id: Optional[str] = None
+    try:
+        acc: Any = get_account()
+        if isinstance(acc, dict):
+            current_account_id = str(acc.get("id") or "").strip()
+        else:
+            current_account_id = str(getattr(acc, "id", "") or "").strip()
+    except Exception as acc_err:
+        logger.warning(f"Could not fetch active Alpaca account ID: {acc_err}")
+
     alpaca_orders = []
     alpaca_order_map = {}
+    alpaca_order_ids: set[str] = set()
     try:
         raw_orders = get_orders(limit=limit)
         if isinstance(raw_orders, list):
             for o in raw_orders:
                 oid = str(o.id)
+                alpaca_order_ids.add(oid)
+                # If current_account_id was not obtained from get_account, fallback to order's account_id
+                if not current_account_id and getattr(o, "account_id", None):
+                    current_account_id = str(o.account_id).strip()
+
                 ostat = getattr(o.status, "value", str(o.status)).lower()
                 if "." in ostat:
                     ostat = ostat.split(".")[-1].lower()
@@ -342,6 +383,7 @@ def get_order_history(limit: int = 50):
                 ord_dict = {
                     "id": oid,
                     "order_id": oid,
+                    "account_id": current_account_id,
                     "symbol": str(o.symbol or ""),
                     "qty": float(o.qty) if o.qty else 0.0,
                     "quantity": float(o.qty) if o.qty else 0.0,
@@ -356,7 +398,7 @@ def get_order_history(limit: int = 50):
                 alpaca_orders.append(ord_dict)
                 alpaca_order_map[oid] = ord_dict
 
-            # Sync live status into SQLite
+            # Sync live status and associate account_id in SQLite
             try:
                 conn = get_connection()
                 for o in raw_orders:
@@ -367,10 +409,11 @@ def get_order_history(limit: int = 50):
                     conn.execute(
                         """
                         UPDATE trade_orders
-                        SET status = ?, filled_avg_price = coalesce(?, filled_avg_price), filled_qty = ?
+                        SET status = ?, filled_avg_price = coalesce(?, filled_avg_price), filled_qty = ?,
+                            account_id = coalesce(account_id, ?)
                         WHERE order_id = ?
                         """,
-                        (ostat, filled_avg, filled_q, oid),
+                        (ostat, filled_avg, filled_q, current_account_id, oid),
                     )
                 conn.commit()
                 conn.close()
@@ -384,17 +427,52 @@ def get_order_history(limit: int = 50):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT order_id, client_order_id, symbol, option_symbol, side,
-                   quantity, order_type, limit_price, status, filled_avg_price,
-                   filled_qty, submitted_at
-            FROM trade_orders
-            ORDER BY submitted_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
+        # Strictly query only orders belonging to this specific account API
+        if current_account_id and alpaca_order_ids:
+            placeholders = ",".join("?" for _ in alpaca_order_ids)
+            cursor.execute(
+                f"""
+                SELECT order_id, account_id, client_order_id, symbol, option_symbol, side,
+                       quantity, order_type, limit_price, status, filled_avg_price,
+                       filled_qty, submitted_at
+                FROM trade_orders
+                WHERE account_id = ? OR order_id IN ({placeholders})
+                ORDER BY submitted_at DESC
+                LIMIT ?
+                """,
+                (current_account_id, *alpaca_order_ids, limit),
+            )
+        elif current_account_id:
+            cursor.execute(
+                """
+                SELECT order_id, account_id, client_order_id, symbol, option_symbol, side,
+                       quantity, order_type, limit_price, status, filled_avg_price,
+                       filled_qty, submitted_at
+                FROM trade_orders
+                WHERE account_id = ?
+                ORDER BY submitted_at DESC
+                LIMIT ?
+                """,
+                (current_account_id, limit),
+            )
+        elif alpaca_order_ids:
+            placeholders = ",".join("?" for _ in alpaca_order_ids)
+            cursor.execute(
+                f"""
+                SELECT order_id, account_id, client_order_id, symbol, option_symbol, side,
+                       quantity, order_type, limit_price, status, filled_avg_price,
+                       filled_qty, submitted_at
+                FROM trade_orders
+                WHERE order_id IN ({placeholders})
+                ORDER BY submitted_at DESC
+                LIMIT ?
+                """,
+                (*alpaca_order_ids, limit),
+            )
+        else:
+            # If no account can be verified and no alpaca orders found, return empty set to prevent exposing other accounts
+            cursor.execute("SELECT 1 WHERE 0")
+
         rows = cursor.fetchall()
         for row in rows:
             d = dict(row)
@@ -428,6 +506,7 @@ def get_order_history(limit: int = 50):
 
             combined_orders.append({
                 "order_id": ao["id"],
+                "account_id": current_account_id,
                 "client_order_id": "",
                 "symbol": stock_sym,
                 "option_symbol": opt_symbol,
@@ -447,6 +526,7 @@ def get_order_history(limit: int = 50):
     return {
         "recorded_orders": combined_orders,
         "alpaca_recent_orders": alpaca_orders,
+        "account_id": current_account_id,
     }
 
 
