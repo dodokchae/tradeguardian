@@ -766,6 +766,10 @@ def get_market_bars(
         days=config["days"],
     )
 
+    req: CryptoBarsRequest | None = None
+    request: StockBarsRequest | None = None
+    crypto_sym: str = ""
+
     is_crypto = "/" in symbol or symbol.endswith("USD") or symbol in {
         "BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "UNI", "AAVE", "LTC", "BCH", "SHIB", "DOT", "MATIC"
     }
@@ -805,7 +809,7 @@ def get_market_bars(
             _BARS_LAST_REQ_TIME = time.time()
 
         try:
-            if is_crypto:
+            if is_crypto and req is not None:
                 bars_resp = crypto_data_client.get_crypto_bars(req)
                 data_dict = getattr(bars_resp, "data", bars_resp)
                 if isinstance(data_dict, dict) and crypto_sym in data_dict:
@@ -813,13 +817,15 @@ def get_market_bars(
                 else:
                     raw_bars = []
                 break
-            else:
+            elif request is not None:
                 bars = stock_data_client.get_stock_bars(request)
                 data_dict = getattr(bars, "data", bars)
                 if isinstance(data_dict, dict) and symbol in data_dict:
                     raw_bars = list(data_dict[symbol])
                 else:
                     raw_bars = []
+                break
+            else:
                 break
         except Exception as err:
             err_msg = str(err).lower()
@@ -1296,7 +1302,7 @@ def submit_option_order(
 
 def _wait_for_order_fill(order: Any, max_wait: float = 2.5) -> Any:
     """Wait briefly for Alpaca to match and fill a closing order so the UI reflects immediate completion."""
-    ord_id = str(getattr(order, "id", "") or "")
+    ord_id = str(order.get("id") if isinstance(order, dict) else getattr(order, "id", "") or "")
     if not ord_id:
         return order
     start_t = time.time()
@@ -1304,7 +1310,8 @@ def _wait_for_order_fill(order: Any, max_wait: float = 2.5) -> Any:
         time.sleep(0.2)
         try:
             latest = trading_client.get_order_by_id(ord_id)
-            ostat = str(getattr(latest.status, "value", str(latest.status))).lower().split(".")[-1]
+            raw_stat = latest.get("status") if isinstance(latest, dict) else getattr(latest, "status", None)
+            ostat = str(getattr(raw_stat, "value", raw_stat) or "").lower().split(".")[-1]
             if ostat in ("filled", "canceled", "rejected", "expired"):
                 return latest
         except Exception:
