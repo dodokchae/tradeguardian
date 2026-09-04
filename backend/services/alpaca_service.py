@@ -1294,6 +1294,24 @@ def submit_option_order(
     return order
 
 
+def _wait_for_order_fill(order: Any, max_wait: float = 2.5) -> Any:
+    """Wait briefly for Alpaca to match and fill a closing order so the UI reflects immediate completion."""
+    ord_id = str(getattr(order, "id", "") or "")
+    if not ord_id:
+        return order
+    start_t = time.time()
+    while time.time() - start_t < max_wait:
+        time.sleep(0.2)
+        try:
+            latest = trading_client.get_order_by_id(ord_id)
+            ostat = str(getattr(latest.status, "value", str(latest.status))).lower().split(".")[-1]
+            if ostat in ("filled", "canceled", "rejected", "expired"):
+                return latest
+        except Exception:
+            break
+    return order
+
+
 def close_option_position(
     symbol_or_asset_id: str,
     qty: float | None = None,
@@ -1304,6 +1322,7 @@ def close_option_position(
     2. If regular market is open (or contract is an option), calls standard close_position.
     3. If regular market is closed and asset is equity, submits an aggressive limit order
        with extended_hours=True to fill immediately on Alpaca paper trading.
+    4. Waits briefly for fill confirmation so caller receives a completed/filled order.
     """
     clean_sym = symbol_or_asset_id.strip().upper()
     is_option = len(clean_sym) > 6 and any(c.isdigit() for c in clean_sym)
@@ -1335,10 +1354,11 @@ def close_option_position(
     # 3. If regular market is open, or if it is an option, use standard close_position
     if clock_open or is_option:
         close_options = ClosePositionRequest(qty=str(qty)) if qty is not None else None
-        return trading_client.close_position(
+        raw_order = trading_client.close_position(
             symbol_or_asset_id=clean_sym,
             close_options=close_options,
         )
+        return _wait_for_order_fill(raw_order, max_wait=2.5)
 
     # 4. If regular market is closed and it is equity, use extended hours limit order
     try:
@@ -1365,17 +1385,17 @@ def close_option_position(
                 extended_hours=True,
             )
             order = trading_client.submit_order(req)
-            time.sleep(1.2)
-            return order
+            return _wait_for_order_fill(order, max_wait=2.5)
     except Exception as ext_err:
         logger.warning(f"Extended hours limit close failed for {clean_sym}, falling back to standard close_position: {ext_err}")
 
     # Fallback to standard close_position
     close_options = ClosePositionRequest(qty=str(qty)) if qty is not None else None
-    return trading_client.close_position(
+    raw_order = trading_client.close_position(
         symbol_or_asset_id=clean_sym,
         close_options=close_options,
     )
+    return _wait_for_order_fill(raw_order, max_wait=2.5)
 
 
 def get_orders(status: str = "all", limit: int = 50):

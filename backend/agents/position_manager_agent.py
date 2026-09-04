@@ -1,6 +1,7 @@
 import logging
 import math
 import re
+import time
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 from pydantic import BaseModel, Field
@@ -9,6 +10,8 @@ from services.alpaca_service import get_positions, close_option_position, get_la
 from services.mcp_service import mcp_close_position, log_agent_action
 
 logger = logging.getLogger("TradeGuardian.PositionManager")
+
+_RECENTLY_CLOSED_POSITIONS: dict[str, float] = {}
 
 # Match OCC standard symbol format (e.g. AAPL260918C00360000 or TSLA260916P00250000)
 OCC_REGEX = re.compile(r"^([A-Z\.]+)\s*(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
@@ -225,6 +228,21 @@ def scan_managed_positions() -> list[ManagedPosition]:
     except Exception as err:
         logger.warning(f"Direct SDK get_positions failed in scan_managed_positions: {err}")
 
+    # Filter out positions that were closed in the last 15s to prevent ghost resurrection while Alpaca database replica catches up
+    now = time.time()
+    for s in list(_RECENTLY_CLOSED_POSITIONS.keys()):
+        if now - _RECENTLY_CLOSED_POSITIONS[s] > 15.0:
+            del _RECENTLY_CLOSED_POSITIONS[s]
+
+    filtered_raw_positions = []
+    for p in raw_positions:
+        sym = str(p.get("symbol") if isinstance(p, dict) else getattr(p, "symbol", "")).strip().upper()
+        if sym in _RECENTLY_CLOSED_POSITIONS or sym.replace("/", "") in _RECENTLY_CLOSED_POSITIONS:
+            logger.info(f"Omitting recently closed position {sym} from active holdings scan.")
+            continue
+        filtered_raw_positions.append(p)
+    raw_positions = filtered_raw_positions
+
     # Eagerly refresh live market snapshots for all active portfolio positions in parallel
     if raw_positions:
         try:
@@ -282,6 +300,12 @@ async def execute_position_exit(symbol: str, qty: float | None = None) -> dict[s
     clean_symbol = symbol.strip().upper() if symbol else ""
     engine = "Alpaca Trading API SDK"
     sdk_error = None
+
+    # Track as recently closed immediately
+    _RECENTLY_CLOSED_POSITIONS[clean_symbol] = time.time()
+    _RECENTLY_CLOSED_POSITIONS[clean_symbol.replace("/", "")] = time.time()
+
+    res = None
     try:
         res = close_option_position(clean_symbol, qty)
         result_data = {
@@ -291,12 +315,34 @@ async def execute_position_exit(symbol: str, qty: float | None = None) -> dict[s
         }
     except Exception as e:
         sdk_error = str(e)
+        err_msg = sdk_error.lower()
+        # If position was already closed, treat as successful completion
+        if "not found" in err_msg or "does not exist" in err_msg or "404" in err_msg:
+            logger.info(f"Position {clean_symbol} was already closed on Alpaca: {e}")
+            return {
+                "success": True,
+                "engine": engine,
+                "symbol": clean_symbol,
+                "message": f"Position {clean_symbol} is already closed on Alpaca.",
+                "result": {"id": "", "symbol": clean_symbol, "status": "filled"},
+            }
+
         logger.warning(f"SDK close_position failed for {clean_symbol}, falling back to FastMCP: {e}")
         engine = "Alpaca MCP Server (FastMCP)"
         try:
-            res = await mcp_close_position(clean_symbol, qty)
-            result_data = res
+            mcp_res = await mcp_close_position(clean_symbol, qty)
+            result_data = mcp_res
         except Exception as mcp_err:
+            mcp_err_msg = str(mcp_err).lower()
+            if "not found" in mcp_err_msg or "does not exist" in mcp_err_msg or "404" in mcp_err_msg:
+                logger.info(f"Position {clean_symbol} was already closed via MCP: {mcp_err}")
+                return {
+                    "success": True,
+                    "engine": engine,
+                    "symbol": clean_symbol,
+                    "message": f"Position {clean_symbol} is already closed on Alpaca.",
+                    "result": {"id": "", "symbol": clean_symbol, "status": "filled"},
+                }
             logger.error(f"Both SDK and MCP close_position failed for {clean_symbol}: {mcp_err}")
             return {
                 "success": False,
@@ -304,6 +350,37 @@ async def execute_position_exit(symbol: str, qty: float | None = None) -> dict[s
                 "symbol": clean_symbol,
                 "error": f"SDK: {sdk_error} | MCP: {mcp_err}",
             }
+
+    # Record closing order in SQLite trade_orders so /trade/orders immediately reflects it with status filled
+    if res is not None:
+        try:
+            from routes.trade import record_order_in_db
+            is_occ = len(clean_symbol) > 6 and any(c.isdigit() for c in clean_symbol)
+            side_str = getattr(res.side, "value", str(res.side)).lower().split(".")[-1] if hasattr(res, "side") else "sell"
+            stat_str = getattr(res.status, "value", str(res.status)).lower().split(".")[-1] if hasattr(res, "status") else "filled"
+            filled_avg = float(res.filled_avg_price) if getattr(res, "filled_avg_price", None) else None
+            filled_q = float(res.filled_qty) if getattr(res, "filled_qty", None) else 0.0
+
+            record_order_in_db(
+                order_dict={
+                    "id": str(getattr(res, "id", "")),
+                    "symbol": clean_symbol,
+                    "side": side_str,
+                    "qty": float(getattr(res, "qty", 0) or qty or 1.0),
+                    "status": stat_str,
+                    "filled_avg_price": filled_avg,
+                    "filled_qty": filled_q,
+                    "submitted_at": str(getattr(res, "submitted_at", datetime.now(timezone.utc).isoformat())),
+                },
+                symbol=clean_symbol if not is_occ else clean_symbol[:4],
+                option_symbol=clean_symbol if is_occ else None,
+                side=side_str,
+                qty=float(getattr(res, "qty", 0) or qty or 1.0),
+                order_type="market",
+                limit_price=None,
+            )
+        except Exception as rec_err:
+            logger.warning(f"Could not record closing order in SQLite: {rec_err}")
 
     log_agent_action(
         "PositionManagerAgent",

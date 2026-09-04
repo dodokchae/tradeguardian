@@ -57,6 +57,7 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
   } | null>(null);
   const highlightTimerRef = React.useRef<NodeJS.Timeout | null>(null);
   const fadeTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+  const recentlyClosedSymbolsRef = React.useRef<Set<string>>(new Set());
 
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
@@ -128,7 +129,11 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
       });
       if (res.ok) {
         const data = await res.json();
-        const posList: ManagedPositionItem[] = Array.isArray(data.positions) ? data.positions : [];
+        const rawList: ManagedPositionItem[] = Array.isArray(data.positions) ? data.positions : [];
+        const posList: ManagedPositionItem[] = rawList.filter((p) => {
+          const s = (p.symbol || '').toUpperCase().trim();
+          return !recentlyClosedSymbolsRef.current.has(s) && !recentlyClosedSymbolsRef.current.has(s.replace('/', ''));
+        });
         
         // Detect price changes and trigger subtle visual tick flashes
         const newFlashes: Record<string, 'up' | 'down'> = {};
@@ -368,9 +373,20 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
   };
 
   const handleClosePosition = async (symbol: string) => {
+    const cleanSym = (symbol || '').toUpperCase().trim();
+    const strippedSym = cleanSym.replace('/', '');
     try {
       setIsClosingSymbol(symbol);
       setActionMessage(null);
+      // Immediately track in recentlyClosedSymbolsRef to prevent ghost resurrection while Alpaca backend processes
+      recentlyClosedSymbolsRef.current.add(cleanSym);
+      recentlyClosedSymbolsRef.current.add(strippedSym);
+      // Immediately remove closed position from local state
+      setPositions((prev) => prev.filter((p) => {
+        const s = (p.symbol || '').toUpperCase().trim();
+        return s !== cleanSym && s !== strippedSym;
+      }));
+
       const res = await fetch(`${backendUrl}/positions/close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -379,22 +395,36 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
       if (res.ok) {
         const data = await res.json();
         setActionMessage(`Successfully closed ${symbol} via ${data.engine || 'Alpaca SDK'}.`);
-        // Remove closed position from local state immediately
-        setPositions((prev) => prev.filter((p) => (p.symbol || '').toUpperCase() !== symbol.toUpperCase()));
         await handleRefreshAll();
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('tradeguardian:account_updated'));
         }
       } else {
         const errData = await res.json();
-        setActionMessage(`Failed to close ${symbol}: ${errData.detail || 'Unknown error'}`);
-        await handleRefreshAll();
+        const errDetail = String(errData.detail || 'Unknown error');
+        if (errDetail.toLowerCase().includes('not found') || errDetail.toLowerCase().includes('does not exist')) {
+          setActionMessage(`Position ${symbol} is already closed on Alpaca.`);
+          await handleRefreshAll();
+        } else {
+          // Re-allow position if genuine failure
+          recentlyClosedSymbolsRef.current.delete(cleanSym);
+          recentlyClosedSymbolsRef.current.delete(strippedSym);
+          setActionMessage(`Failed to close ${symbol}: ${errDetail}`);
+          await handleRefreshAll();
+        }
       }
     } catch (err: any) {
+      recentlyClosedSymbolsRef.current.delete(cleanSym);
+      recentlyClosedSymbolsRef.current.delete(strippedSym);
       setActionMessage(`Error closing position: ${err.message}`);
       await handleRefreshAll();
     } finally {
       setIsClosingSymbol(null);
+      // Release from blocklist after 12s when Alpaca replication is complete
+      setTimeout(() => {
+        recentlyClosedSymbolsRef.current.delete(cleanSym);
+        recentlyClosedSymbolsRef.current.delete(strippedSym);
+      }, 12000);
     }
   };
 
