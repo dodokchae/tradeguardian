@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Sidebar } from '../components/Sidebar';
 import { HoldingDetailModal } from '../components/HoldingDetailModal';
+import { ClosePositionResultOverlay, ClosePositionResult } from '../components/ClosePositionResultOverlay';
 import { ManagedPositionItem, McpStatusResponse } from '../types/trade';
 
 interface Props {
@@ -45,6 +46,7 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
   const [activeAccountId, setActiveAccountId] = useState<string>('');
   const [isClosingSymbol, setIsClosingSymbol] = useState<string | null>(null);
   const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
+  const [closeResult, setCloseResult] = useState<ClosePositionResult | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [secondsSinceSync, setSecondsSinceSync] = useState<number>(0);
   const [priceFlashes, setPriceFlashes] = useState<Record<string, 'up' | 'down'>>({});
@@ -375,6 +377,20 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
   const handleClosePosition = async (symbol: string) => {
     const cleanSym = (symbol || '').toUpperCase().trim();
     const strippedSym = cleanSym.replace('/', '');
+
+    // Capture position data BEFORE removing so we can show P&L result
+    const closingPos = positions.find((p) => {
+      const s = (p.symbol || '').toUpperCase().trim();
+      return s === cleanSym || s === strippedSym;
+    });
+    const capturedPnl = closingPos ? Number(closingPos.unrealized_pl ?? 0) : 0;
+    const capturedPnlPct = closingPos ? Number(closingPos.unrealized_plpc ?? 0) * 100 : 0;
+    const capturedEntry = closingPos ? Number(closingPos.avg_entry_price ?? 0) : 0;
+    const capturedExit = closingPos ? Number(closingPos.current_price ?? capturedEntry) : 0;
+    const capturedQty = closingPos ? Number(closingPos.qty ?? 0) : 0;
+    const capturedIsOption = closingPos?.is_option ?? false;
+    const capturedIsCrypto = closingPos ? isCryptoPosition(closingPos) : false;
+
     try {
       setIsClosingSymbol(symbol);
       setActionMessage(null);
@@ -395,6 +411,19 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
       if (res.ok) {
         const data = await res.json();
         setActionMessage(`Successfully closed ${symbol} via ${data.engine || 'Alpaca SDK'}.`);
+
+        // Show P&L result overlay with sound + effects
+        setCloseResult({
+          symbol: cleanSym,
+          pnl: capturedPnl,
+          pnlPercent: capturedPnlPct,
+          entryPrice: capturedEntry,
+          exitPrice: capturedExit,
+          qty: capturedQty,
+          isOption: capturedIsOption,
+          isCrypto: capturedIsCrypto,
+        });
+
         await handleRefreshAll();
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('tradeguardian:account_updated'));
@@ -1071,6 +1100,12 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
           setSelectedHolding(null);
         }}
         isClosing={isClosingSymbol === activeHolding?.symbol}
+      />
+
+      {/* Close Position P&L Result Overlay (confetti/shatter + sound) */}
+      <ClosePositionResultOverlay
+        result={closeResult}
+        onDismiss={() => setCloseResult(null)}
       />
     </div>
   );
