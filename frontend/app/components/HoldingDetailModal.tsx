@@ -555,10 +555,13 @@ export const HoldingDetailModal: React.FC<Props> = ({
           </div>
 
           <div className="flex items-center gap-3 ml-auto">
-            {/* Dedicated CLOSE POSITION Button with Confirmation */}
+            {/* Dedicated CLOSE / LIQUIDATE POSITION Button with Confirmation */}
             {showConfirmClose ? (
-              <div className="flex items-center gap-2 p-1 bg-rose-950/40 border border-rose-500/50 rounded-xl">
-                <span className="text-xs text-rose-300 font-bold px-2">Confirm Close?</span>
+              <div className="flex items-center gap-2 p-1.5 bg-rose-950/40 border border-rose-500/50 rounded-xl">
+                <div className="text-xs text-rose-300 font-bold px-2 flex items-center gap-1">
+                  <span className="material-symbols-outlined text-sm text-rose-400">warning</span>
+                  <span>Liquidate {position.qty} {position.symbol} via Market Sell?</span>
+                </div>
                 <button
                   type="button"
                   onClick={handleExecuteClose}
@@ -568,12 +571,12 @@ export const HoldingDetailModal: React.FC<Props> = ({
                   {isClosing ? (
                     <>
                       <span className="material-symbols-outlined text-sm animate-spin">refresh</span>
-                      <span>Closing...</span>
+                      <span>Liquidating...</span>
                     </>
                   ) : (
                     <>
-                      <span className="material-symbols-outlined text-sm">check</span>
-                      <span>Yes, Close Now</span>
+                      <span className="material-symbols-outlined text-sm">sell</span>
+                      <span>Confirm Market Sell</span>
                     </>
                   )}
                 </button>
@@ -583,7 +586,7 @@ export const HoldingDetailModal: React.FC<Props> = ({
                   disabled={isClosing}
                   className="px-2.5 py-1.5 rounded-lg bg-[#27272a] hover:bg-[#3f3f46] text-[#a1a1aa] hover:text-white text-xs font-semibold cursor-pointer"
                 >
-                  Cancel
+                  Keep Position
                 </button>
               </div>
             ) : (
@@ -593,8 +596,8 @@ export const HoldingDetailModal: React.FC<Props> = ({
                 disabled={isClosing}
                 className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs transition-all flex items-center gap-1.5 shadow-lg shadow-rose-900/40 cursor-pointer disabled:opacity-50 active:scale-95"
               >
-                <span className="material-symbols-outlined text-sm">cancel</span>
-                <span>{isClosing ? 'Closing...' : 'Close Position'}</span>
+                <span className="material-symbols-outlined text-sm">sell</span>
+                <span>{isClosing ? 'Liquidating...' : 'Liquidate / Sell Position'}</span>
               </button>
             )}
           </div>

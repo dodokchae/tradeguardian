@@ -230,6 +230,7 @@ export default function AIOpportunityPage({ onNavigate, onSelectTrade, isActive 
   const [oppExecutionMsg, setOppExecutionMsg] = useState<{ [id: string]: string }>({});
 
   const inFlightControllerRef = useRef<AbortController | null>(null);
+  const isSubmittingRef = useRef<boolean>(false);
   const revealTimerRef = useRef<NodeJS.Timeout | null>(null);
   const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
   const toastExitTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -471,7 +472,7 @@ export default function AIOpportunityPage({ onNavigate, onSelectTrade, isActive 
               symbol: propTrade.symbol || sym,
               orderSide: propTrade.orderSide || (isBull ? 'BUY' : 'SELL'),
               quantity: Number(propTrade.quantity || (isCrypto ? 0.05 : 1)),
-              executionType: propTrade.executionType || 'Limit',
+              executionType: propTrade.executionType || 'Market',
               entryPrice: propTrade.entryPrice || (curPrice < 1 ? curPrice.toFixed(4) : curPrice.toFixed(2)),
               guardianSL: propTrade.guardianSL || defaultGuardianSL,
               guardianTP: propTrade.guardianTP || defaultGuardianTP,
@@ -482,7 +483,7 @@ export default function AIOpportunityPage({ onNavigate, onSelectTrade, isActive 
               symbol: sym,
               orderSide: isBull ? 'BUY' : 'SELL',
               quantity: isCrypto ? 0.05 : Math.max(1, Math.min(25, Math.floor(4500 / Math.max(10, curPrice)))),
-              executionType: 'Limit',
+              executionType: 'Market',
               entryPrice: curPrice < 1 ? curPrice.toFixed(4) : curPrice.toFixed(2),
               guardianSL: defaultGuardianSL,
               guardianTP: defaultGuardianTP,
@@ -600,10 +601,14 @@ export default function AIOpportunityPage({ onNavigate, onSelectTrade, isActive 
   };
 
   const handleQuickExecute = async (opp: AIOpportunity) => {
+    // Synchronous lock prevents double-submission race conditions from rapid clicking
+    if (isSubmittingRef.current || executingOppId === opp.id) return;
+    isSubmittingRef.current = true;
+
     try {
       setExecutingOppId(opp.id);
 
-      // Determine robust side, quantity, order type, and limit price
+      // Determine robust side and quantity
       const side = opp.proposedTrade?.orderSide
         ? (opp.proposedTrade.orderSide.toLowerCase().includes('sell') ? 'sell' : 'buy')
         : (opp.bias === 'Bearish' ? 'sell' : 'buy');
@@ -614,21 +619,7 @@ export default function AIOpportunityPage({ onNavigate, onSelectTrade, isActive 
         if (!isNaN(parsedQ) && parsedQ > 0) quantity = parsedQ;
       }
 
-      const rawExecType = (opp.proposedTrade?.executionType || 'Limit').toLowerCase();
-      const order_type = rawExecType.includes('limit') ? 'limit' : 'market';
-
-      let limit_price: number | undefined = undefined;
-      if (opp.proposedTrade?.entryPrice) {
-        const cleanStr = String(opp.proposedTrade.entryPrice).replace(/[^0-9.]/g, '');
-        const parsedP = parseFloat(cleanStr);
-        if (!isNaN(parsedP) && parsedP > 0) limit_price = parsedP;
-      }
-      if (order_type === 'limit' && (limit_price == null || limit_price <= 0)) {
-        if (opp.currentPrice && opp.currentPrice > 0) {
-          limit_price = opp.currentPrice;
-        }
-      }
-
+      // Quick Trade is an instant market execution: fills 100% immediately on Alpaca without partial fill hangs
       const res = await fetch(`${backendUrl}/trade/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -636,9 +627,8 @@ export default function AIOpportunityPage({ onNavigate, onSelectTrade, isActive 
           symbol: opp.symbol,
           side: side,
           quantity: quantity,
-          order_type: order_type,
-          limit_price: order_type === 'limit' ? limit_price : undefined,
-          source: 'TradeGuardian AI Opportunity',
+          order_type: 'market',
+          source: 'TradeGuardian AI Opportunity - Quick Trade',
           strategy: opp.strategy,
         }),
       });
@@ -690,6 +680,7 @@ export default function AIOpportunityPage({ onNavigate, onSelectTrade, isActive 
       }));
     } finally {
       setExecutingOppId(null);
+      isSubmittingRef.current = false;
     }
   };
 

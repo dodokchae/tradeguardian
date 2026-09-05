@@ -333,6 +333,7 @@ export default function TradeAnalysisPage() {
   // Ref to track current selected symbol for use inside closures
   const selectedSymbolRef = useRef<string>(selectedAsset.symbol);
   useEffect(() => { selectedSymbolRef.current = selectedAsset.symbol; }, [selectedAsset.symbol]);
+  const isExecutingTradeRef = useRef<boolean>(false);
 
   // Fetch live Alpaca assets from backend (on mount + 30s polling for live prices)
   useEffect(() => {
@@ -621,6 +622,9 @@ export default function TradeAnalysisPage() {
 
   const handleExecuteTradeViaMcp = async () => {
     if (!analysisResult || analysisResult.decision.status !== 'APPROVED') return;
+    if (isExecutingTradeRef.current) return;
+    isExecutingTradeRef.current = true;
+
     try {
       setIsExecutingTrade(true);
       setTradeExecutionMessage(null);
@@ -642,16 +646,22 @@ export default function TradeAnalysisPage() {
         }
       }
 
+      // Check if it's an actual OCC option contract symbol before populating option_symbol
+      const isOptionContract = Boolean(
+        (selectedAsset as any)?.is_option ||
+        (symbol.length > 6 && /\d/.test(symbol) && !symbol.includes('/'))
+      );
+
       const res = await fetch(`${backendUrl}/trade/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           symbol: symbol,
-          option_symbol: symbol,
+          option_symbol: isOptionContract ? symbol : undefined,
           side: side.toLowerCase().includes('sell') ? 'sell' : 'buy',
           quantity: parsedQty,
           order_type: entryMode.toLowerCase(),
-          limit_price: cleanLimitPrice,
+          limit_price: entryMode === 'LIMIT' ? cleanLimitPrice : undefined,
           source: 'Guardian Risk Desk',
         }),
       });
@@ -709,6 +719,7 @@ export default function TradeAnalysisPage() {
       setTradeExecutionMessage(`Error executing order: ${err?.message || 'Network error'}`);
     } finally {
       setIsExecutingTrade(false);
+      isExecutingTradeRef.current = false;
     }
   };
 

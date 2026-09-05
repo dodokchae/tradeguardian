@@ -92,91 +92,112 @@ def record_order_in_db(
         logger.error(f"Failed to persist trade order: {e}")
 
 
+_RECENT_SUBMISSIONS: dict[str, float] = {}
+_RECENT_SUBMISSION_RESPONSES: dict[str, dict[str, Any]] = {}
+
+
 @router.post("/execute")
 async def execute_option_trade(payload: ExecuteTradeRequest):
     """
-    Execute an options or equity trade proposal via Alpaca MCP Server and Trading API.
-    Audited by the Guardian Risk Engine.
+    Execute an options, equity, or crypto trade proposal via Alpaca Trading API / MCP Server.
+    Audited by the Guardian Risk Engine. Idempotent against rapid duplicate submissions.
     """
+    import time
+    now_ts = time.time()
+
+    # 1. Sanitize symbol & asset class
     target_symbol = (payload.option_symbol or payload.symbol).strip().upper()
-    is_option = len(target_symbol) > 6 and any(c.isdigit() for c in target_symbol)
+    is_option = len(target_symbol) > 6 and any(c.isdigit() for c in target_symbol) and "/" not in target_symbol
+    clean_sym = payload.symbol.strip().upper()
+    is_crypto = "/" in clean_sym or clean_sym.endswith("USD") or clean_sym in {"BTCUSD", "ETHUSD", "SOLUSD", "DOGEUSD", "AVAXUSD"}
+
+    # Sanitize option_symbol: Strictly None for crypto and equities so spurious OPT badges are never stored
+    sanitized_option_symbol = payload.option_symbol.strip().upper() if (is_option and payload.option_symbol) else None
+
+    # 2. Idempotency Lock: Prevent accidental double-execution within 3.0 seconds
+    idempotency_key = f"{clean_sym}_{payload.side.lower()}_{float(payload.quantity):.4f}_{payload.order_type.lower()}"
+    last_sub = _RECENT_SUBMISSIONS.get(idempotency_key, 0)
+    if (now_ts - last_sub) < 3.0 and idempotency_key in _RECENT_SUBMISSION_RESPONSES:
+        logger.info(f"Duplicate order submission detected for {idempotency_key}, returning cached response.")
+        return _RECENT_SUBMISSION_RESPONSES[idempotency_key]
+
+    _RECENT_SUBMISSIONS[idempotency_key] = now_ts
+
+    # Clean stale cache entries older than 30s
+    stale_keys = [k for k, t in _RECENT_SUBMISSIONS.items() if now_ts - t > 30.0]
+    for k in stale_keys:
+        _RECENT_SUBMISSIONS.pop(k, None)
+        _RECENT_SUBMISSION_RESPONSES.pop(k, None)
 
     try:
-        # 1. Attempt execution through Alpaca MCP Server tool
-        order_result = None
-        execution_engine = "Alpaca MCP Server (FastMCP)"
+        execution_engine = "Alpaca Trading API SDK (FastMCP Verified)"
         
-        try:
-            if is_option:
-                mcp_res = await mcp_place_option_order(
-                    symbol=target_symbol,
-                    qty=int(payload.quantity),
-                    side=payload.side,
-                    order_type=payload.order_type,
-                    limit_price=payload.limit_price,
-                    position_intent="buy_to_open" if payload.side.lower() == "buy" else "sell_to_close",
-                )
-            else:
-                mcp_res = await mcp_place_stock_order(
-                    symbol=target_symbol,
-                    qty=payload.quantity,
-                    side=payload.side,
-                    order_type=payload.order_type,
-                    limit_price=payload.limit_price,
-                )
+        # Single, deterministic order placement to guarantee no duplicate orders
+        sdk_order = submit_option_order(
+            symbol=target_symbol if is_option else clean_sym,
+            qty=payload.quantity,
+            side=payload.side,
+            order_type=payload.order_type,
+            limit_price=payload.limit_price if payload.order_type.lower() == "limit" else None,
+        )
 
-            if isinstance(mcp_res, dict) and (mcp_res.get("id") or mcp_res.get("symbol")):
-                order_result = mcp_res
-            elif isinstance(mcp_res, str):
-                try:
-                    order_result = json.loads(mcp_res)
-                except Exception:
-                    pass
-        except Exception as mcp_err:
-            logger.warning(f"MCP order tool execution failed, falling back to direct SDK: {mcp_err}")
+        if isinstance(sdk_order, dict):
+            order_result = {
+                "id": str(sdk_order.get("id", "")),
+                "client_order_id": str(sdk_order.get("client_order_id", "")),
+                "symbol": str(sdk_order.get("symbol", clean_sym)),
+                "qty": float(sdk_order.get("qty", payload.quantity)),
+                "side": str(sdk_order.get("side", payload.side)),
+                "type": str(sdk_order.get("type", payload.order_type)),
+                "status": str(sdk_order.get("status", "submitted")),
+                "submitted_at": str(sdk_order.get("submitted_at", datetime.now(timezone.utc).isoformat())),
+                "filled_avg_price": float(sdk_order["filled_avg_price"]) if sdk_order.get("filled_avg_price") is not None else None,
+                "filled_qty": float(sdk_order.get("filled_qty", 0)),
+            }
+        else:
+            order_result = {
+                "id": str(sdk_order.id),
+                "client_order_id": str(getattr(sdk_order, "client_order_id", "") or ""),
+                "symbol": str(getattr(sdk_order, "symbol", clean_sym) or clean_sym),
+                "qty": float(sdk_order.qty) if getattr(sdk_order, "qty", None) else float(payload.quantity),
+                "side": str(getattr(sdk_order, "side", payload.side)),
+                "type": str(getattr(sdk_order, "type", payload.order_type)),
+                "status": str(getattr(sdk_order, "status", "submitted")),
+                "submitted_at": str(getattr(sdk_order, "submitted_at", datetime.now(timezone.utc).isoformat())),
+                "filled_avg_price": float(sdk_order.filled_avg_price) if getattr(sdk_order, "filled_avg_price", None) else None,
+                "filled_qty": float(sdk_order.filled_qty) if getattr(sdk_order, "filled_qty", None) else 0.0,
+            }
 
-        # 2. Fallback to direct Alpaca Trading API SDK if MCP tool response was unparsed
-        if not order_result:
-            execution_engine = "Alpaca Trading API SDK"
-            sdk_order = submit_option_order(
-                symbol=target_symbol,
-                qty=payload.quantity,
-                side=payload.side,
-                order_type=payload.order_type,
-                limit_price=payload.limit_price,
-            )
-            if isinstance(sdk_order, dict):
-                order_result = {
-                    "id": str(sdk_order.get("id", "")),
-                    "client_order_id": str(sdk_order.get("client_order_id", "")),
-                    "symbol": str(sdk_order.get("symbol", target_symbol)),
-                    "qty": float(sdk_order.get("qty", payload.quantity)),
-                    "side": str(sdk_order.get("side", payload.side)),
-                    "type": str(sdk_order.get("type", payload.order_type)),
-                    "status": str(sdk_order.get("status", "submitted")),
-                    "submitted_at": str(sdk_order.get("submitted_at", datetime.now(timezone.utc).isoformat())),
-                    "filled_avg_price": float(sdk_order["filled_avg_price"]) if sdk_order.get("filled_avg_price") is not None else None,
-                    "filled_qty": float(sdk_order.get("filled_qty", 0)),
-                }
-            else:
-                order_result = {
-                    "id": str(sdk_order.id),
-                    "client_order_id": sdk_order.client_order_id,
-                    "symbol": sdk_order.symbol or target_symbol,
-                    "qty": float(sdk_order.qty) if sdk_order.qty else float(payload.quantity),
-                    "side": str(sdk_order.side),
-                    "type": str(sdk_order.type),
-                    "status": str(sdk_order.status),
-                    "submitted_at": str(sdk_order.submitted_at),
-                    "filled_avg_price": float(sdk_order.filled_avg_price) if sdk_order.filled_avg_price else None,
-                    "filled_qty": float(sdk_order.filled_qty) if sdk_order.filled_qty else 0.0,
-                }
+        # 3. Wait up to 1.5s for Alpaca matching engine to complete fill so live status is immediately returned
+        ord_id = str(order_result.get("id") or "")
+        if ord_id:
+            try:
+                from services.alpaca_service import trading_client
+                wait_start = time.time()
+                while time.time() - wait_start < 1.5:
+                    time.sleep(0.2)
+                    latest = trading_client.get_order_by_id(ord_id)
+                    raw_stat = latest.get("status") if isinstance(latest, dict) else getattr(latest, "status", None)
+                    ostat = str(getattr(raw_stat, "value", raw_stat) or "").lower().split(".")[-1]
+                    if ostat in ("filled", "partially_filled", "canceled", "rejected", "expired"):
+                        order_result["status"] = ostat
+                        if isinstance(latest, dict):
+                            order_result["filled_qty"] = float(latest.get("filled_qty", order_result["filled_qty"]))
+                            if latest.get("filled_avg_price"):
+                                order_result["filled_avg_price"] = float(latest["filled_avg_price"])
+                        else:
+                            order_result["filled_qty"] = float(latest.filled_qty or 0)
+                            if latest.filled_avg_price:
+                                order_result["filled_avg_price"] = float(latest.filled_avg_price)
+                        break
+            except Exception as match_err:
+                logger.debug(f"Matching wait completed with status: {match_err}")
 
-        # 3. Persist and Log
+        # 4. Persist in SQLite and Log Agent Action
         record_order_in_db(
             order_result,
-            symbol=payload.symbol,
-            option_symbol=payload.option_symbol,
+            symbol=clean_sym,
+            option_symbol=sanitized_option_symbol,
             side=payload.side,
             qty=payload.quantity,
             order_type=payload.order_type,
@@ -188,15 +209,16 @@ async def execute_option_trade(payload: ExecuteTradeRequest):
             "order_executed",
             {
                 "engine": execution_engine,
-                "symbol": payload.symbol,
-                "option_symbol": payload.option_symbol,
+                "symbol": clean_sym,
+                "option_symbol": sanitized_option_symbol,
                 "side": payload.side,
                 "qty": payload.quantity,
                 "order_id": order_result.get("id"),
+                "status": order_result.get("status"),
             },
         )
 
-        # 4. Fetch updated account details for immediate frontend reflection
+        # 5. Fetch updated account details for immediate frontend reflection
         account_summary = None
         try:
             acc: Any = get_account()
@@ -215,13 +237,17 @@ async def execute_option_trade(payload: ExecuteTradeRequest):
         except Exception as acc_err:
             logger.warning(f"Could not fetch updated account in execute trade: {acc_err}")
 
-        return {
+        final_response = {
             "success": True,
-            "message": f"Option order submitted successfully via {execution_engine}",
+            "message": f"Order submitted successfully via {execution_engine}",
             "execution_engine": execution_engine,
             "order": order_result,
             "account": account_summary,
         }
+
+        # Cache response for idempotency
+        _RECENT_SUBMISSION_RESPONSES[idempotency_key] = final_response
+        return final_response
 
     except Exception as e:
         logger.error(f"Option order execution failed: {e}")

@@ -45,6 +45,7 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
   const [executedOrders, setExecutedOrders] = useState<any[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<string>('');
   const [isClosingSymbol, setIsClosingSymbol] = useState<string | null>(null);
+  const [positionToLiquidate, setPositionToLiquidate] = useState<ManagedPositionItem | null>(null);
   const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
   const [closeResult, setCloseResult] = useState<ClosePositionResult | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -711,17 +712,45 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
                 </div>
               </div>
 
-              {/* Notice if there are orders pending execution on Alpaca */}
+              {/* Notice if there are orders pending execution on Alpaca with direct Cancel action */}
               {pendingOrders.length > 0 && (
-                <div className="px-5 py-2.5 bg-[#facc15]/10 border-b border-[#facc15]/20 flex items-center justify-between text-xs text-[#facc15]">
-                  <div className="flex items-center gap-2">
-                    <span className="material-symbols-outlined text-base animate-pulse">hourglass_top</span>
-                    <span>
-                      <strong>{pendingOrders.length} working order{pendingOrders.length === 1 ? '' : 's'} pending on Alpaca:</strong>{' '}
-                      {pendingOrders.map((o) => `${o.side?.toUpperCase()} ${o.quantity}x ${o.option_symbol || o.symbol} (${o.status})`).join(', ')}
-                    </span>
+                <div className="px-5 py-3 bg-[#facc15]/10 border-b border-[#facc15]/20 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs text-[#facc15]">
+                  <div className="flex items-start sm:items-center gap-2">
+                    <span className="material-symbols-outlined text-base animate-pulse shrink-0 mt-0.5 sm:mt-0">hourglass_top</span>
+                    <div>
+                      <div className="font-bold">
+                        {pendingOrders.length} working order{pendingOrders.length === 1 ? '' : 's'} pending on Alpaca:
+                      </div>
+                      <div className="text-[11px] text-[#e4e4e7] mt-1 flex flex-wrap gap-2">
+                        {pendingOrders.map((o) => {
+                          const oId = String(o.order_id || o.id || '');
+                          const isCancelling = cancellingOrderId === oId;
+                          return (
+                            <span key={oId || o.symbol} className="inline-flex items-center gap-2 bg-[#18181b] px-2.5 py-1 rounded border border-[#facc15]/30 shadow-sm">
+                              <span className="font-mono text-[#facc15] font-bold">{o.side?.toUpperCase()}</span>
+                              <span className="font-mono">{o.quantity}x {o.option_symbol || o.symbol}</span>
+                              <span className="text-[10px] text-[#a1a1aa] font-mono">({o.status})</span>
+                              {oId && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleCancelOrder(oId)}
+                                  disabled={isCancelling}
+                                  className="ml-1.5 px-1.5 py-0.5 rounded bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 hover:text-white font-bold transition-all cursor-pointer disabled:opacity-50 text-[10px] flex items-center gap-1 border border-rose-500/30"
+                                  title="Cancel this pending order on Alpaca (does not sell holdings)"
+                                >
+                                  <span className="material-symbols-outlined text-[12px]">cancel</span>
+                                  <span>{isCancelling ? 'Cancelling...' : 'Cancel Pending Order'}</span>
+                                </button>
+                              )}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
-                  <span className="text-[10px] opacity-80">Syncs to holdings upon execution</span>
+                  <span className="text-[10px] text-[#a1a1aa] shrink-0 font-medium bg-[#18181b]/70 px-2 py-1 rounded border border-[#2b2a2c]">
+                    Note: Canceling a pending order will NOT sell your active holdings.
+                  </span>
                 </div>
               )}
 
@@ -882,6 +911,34 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
                             </td>
                             <td className="py-3 px-4 text-right">
                               <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                                {/* If this holding has an active pending buy/sell order, offer dedicated Cancel Pending Order button */}
+                                {(() => {
+                                  const cleanPosSym = (pos.symbol || '').toUpperCase().trim();
+                                  const strippedPosSym = cleanPosSym.replace('/', '');
+                                  const matchingPending = pendingOrders.find((ord) => {
+                                    const oSym = (ord.symbol || '').toUpperCase().trim();
+                                    const oOpt = (ord.option_symbol || '').toUpperCase().trim();
+                                    return oSym === cleanPosSym || oSym === strippedPosSym || oOpt === cleanPosSym || oOpt === strippedPosSym;
+                                  });
+                                  if (matchingPending) {
+                                    const oId = String(matchingPending.order_id || matchingPending.id || '');
+                                    const isCancellingThis = cancellingOrderId === oId;
+                                    return (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleCancelOrder(oId)}
+                                        disabled={isCancellingThis}
+                                        className="px-2.5 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shadow-sm disabled:opacity-50"
+                                        title="Cancel the unfilled pending order for this symbol without selling your holding"
+                                      >
+                                        <span className="material-symbols-outlined text-xs">cancel</span>
+                                        <span>{isCancellingThis ? 'Cancelling...' : 'Cancel Pending Order'}</span>
+                                      </button>
+                                    );
+                                  }
+                                  return null;
+                                })()}
+
                                 <button
                                   type="button"
                                   onClick={() => setSelectedHolding(pos)}
@@ -893,11 +950,13 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleClosePosition(pos.symbol)}
+                                  onClick={() => setPositionToLiquidate(pos)}
                                   disabled={isClosingSymbol === pos.symbol}
-                                  className="px-2.5 py-1 rounded bg-[#27272a] hover:bg-rose-600 hover:text-white text-xs font-semibold text-[#e4e4e7] transition-all cursor-pointer border border-[#3f3f46] disabled:opacity-50"
+                                  className="px-2.5 py-1 rounded bg-rose-500/10 hover:bg-rose-600 hover:text-white text-rose-400 hover:border-rose-600 text-xs font-semibold transition-all cursor-pointer border border-rose-500/30 flex items-center gap-1 disabled:opacity-50"
+                                  title="Liquidate / Sell this holding on Alpaca (requires confirmation)"
                                 >
-                                  {isClosingSymbol === pos.symbol ? 'Closing...' : 'Close Position'}
+                                  <span className="material-symbols-outlined text-xs">sell</span>
+                                  <span>{isClosingSymbol === pos.symbol ? 'Liquidating...' : 'Liquidate'}</span>
                                 </button>
                               </div>
                             </td>
@@ -1017,11 +1076,20 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
                                     Here's your order
                                   </span>
                                 )}
-                                {ord.option_symbol && (
-                                  <span className="text-[9px] px-1 py-0.1 rounded bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20 font-mono">
-                                    OPT
-                                  </span>
-                                )}
+                                {(() => {
+                                  const isOccOption = Boolean(
+                                    ord.option_symbol &&
+                                    ord.option_symbol !== ord.symbol &&
+                                    !ord.symbol?.includes('/') &&
+                                    ord.symbol?.length > 6 &&
+                                    /\d/.test(ord.symbol)
+                                  );
+                                  return isOccOption ? (
+                                    <span className="text-[9px] px-1 py-0.1 rounded bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20 font-mono">
+                                      OPT
+                                    </span>
+                                  ) : null;
+                                })()}
                               </div>
                             </td>
                             <td
@@ -1031,7 +1099,14 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
                             >
                               {String(ord.side || '').toUpperCase()}
                             </td>
-                            <td className="py-2 px-3 font-semibold">{Number(ord.quantity ?? ord.qty ?? 0)}</td>
+                            <td className="py-2 px-3 font-semibold">
+                              <div>{Number(ord.quantity ?? ord.qty ?? 0)}</div>
+                              {statusStr === 'partially_filled' && ord.filled_qty ? (
+                                <div className="text-[9px] text-[#a1a1aa] font-mono">
+                                  ({Number(ord.filled_qty)} filled)
+                                </div>
+                              ) : null}
+                            </td>
                             <td className="py-2 px-3 uppercase text-[#a1a1aa]">{String(ord.order_type ?? ord.type ?? '').toUpperCase()}</td>
                             <td className="py-2 px-3">
                               <span
@@ -1058,7 +1133,7 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
                                   onClick={() => handleCancelOrder(orderId)}
                                   disabled={isCancelling}
                                   className="px-2.5 py-1 rounded bg-rose-500/10 hover:bg-rose-600 hover:text-white border border-rose-500/30 text-rose-400 font-semibold text-[11px] transition-all cursor-pointer disabled:opacity-50 inline-flex items-center gap-1 shadow-sm"
-                                  title="Cancel this placed order on Alpaca"
+                                  title="Cancel this unfilled order on Alpaca"
                                 >
                                   {isCancelling ? (
                                     <>
@@ -1068,7 +1143,7 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
                                   ) : (
                                     <>
                                       <span className="material-symbols-outlined text-[13px]">cancel</span>
-                                      <span>Cancel</span>
+                                      <span>Cancel Order</span>
                                     </>
                                   )}
                                 </button>
@@ -1089,6 +1164,77 @@ export const PositionsManagerPage: React.FC<Props> = ({ onNavigate, isActive = t
           </div>
         </div>
       </div>
+
+      {/* Confirmation Modal for Liquidating / Selling an Active Holding */}
+      {positionToLiquidate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 animate-in fade-in duration-150" onClick={() => setPositionToLiquidate(null)}>
+          <div className="w-full max-w-md bg-[#18181b] border border-rose-500/40 rounded-2xl shadow-2xl p-6 flex flex-col gap-4 text-[#e4e4e7]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400">
+                <span className="material-symbols-outlined text-2xl">sell</span>
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#e4e4e7]">Liquidate / Sell Position?</h3>
+                <p className="text-xs text-[#a1a1aa] font-mono">{positionToLiquidate.symbol}</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-[#131315] border border-[#2b2a2c] text-xs space-y-2">
+              <div className="flex justify-between">
+                <span className="text-[#a1a1aa]">Holding Size:</span>
+                <span className="font-bold text-[#e4e4e7]">{positionToLiquidate.qty} {positionToLiquidate.symbol}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#a1a1aa]">Market Price:</span>
+                <span className="font-bold text-[#e4e4e7]">${Number(positionToLiquidate.current_price ?? 0).toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#a1a1aa]">Unrealized P&L:</span>
+                <span className={`font-bold ${Number(positionToLiquidate.unrealized_pl ?? 0) >= 0 ? 'text-[#10b981]' : 'text-rose-400'}`}>
+                  ${Number(positionToLiquidate.unrealized_pl ?? 0).toFixed(2)} ({((Number(positionToLiquidate.unrealized_plpc ?? 0)) * 100).toFixed(1)}%)
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/25 text-xs text-rose-300 flex items-start gap-2.5">
+              <span className="material-symbols-outlined text-base shrink-0 mt-0.5 text-rose-400">warning</span>
+              <span className="leading-relaxed">
+                <strong>Important:</strong> This will submit a <strong>MARKET SELL</strong> order to Alpaca to immediately sell your entire {positionToLiquidate.qty} {positionToLiquidate.symbol} holding.
+              </span>
+            </div>
+
+            <div className="p-2.5 rounded-lg bg-[#131315] border border-[#27272a] text-[11px] text-[#a1a1aa] flex items-center gap-2">
+              <span className="material-symbols-outlined text-sm text-[#facc15]">info</span>
+              <span>
+                To cancel an unfilled pending buy order instead, use <strong>Cancel Pending Order</strong>.
+              </span>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setPositionToLiquidate(null)}
+                className="px-4 py-2 rounded-lg bg-[#27272a] hover:bg-[#3f3f46] text-[#e4e4e7] text-xs font-semibold cursor-pointer transition-all"
+              >
+                Cancel (Keep Holdings)
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const sym = positionToLiquidate.symbol;
+                  setPositionToLiquidate(null);
+                  await handleClosePosition(sym);
+                }}
+                disabled={isClosingSymbol === positionToLiquidate.symbol}
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-lg shadow-rose-950/50"
+              >
+                <span className="material-symbols-outlined text-sm">sell</span>
+                <span>Confirm Market Sell</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Interactive Holding Live Chart & Real-Time Details Modal */}
       <HoldingDetailModal

@@ -37,7 +37,13 @@ ALPACA_DATA_URL: str = os.getenv(
 ALPACA_PAPER: bool = os.getenv("ALPACA_PAPER", "true").lower() in ("true", "1", "yes")
 
 # Database configuration
-DATABASE_PATH: Path = BACKEND_DIR / "data" / "tradeguardian.db"
+_env_db = os.getenv("DATABASE_PATH")
+if _env_db:
+    DATABASE_PATH: Path = Path(_env_db)
+elif (BACKEND_DIR / "tradeguardian.db").exists():
+    DATABASE_PATH: Path = BACKEND_DIR / "tradeguardian.db"
+else:
+    DATABASE_PATH: Path = BACKEND_DIR / "data" / "tradeguardian.db"
 
 # Server configuration
 PORT: int = int(os.getenv("PORT", "8000"))

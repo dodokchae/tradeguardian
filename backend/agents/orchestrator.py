@@ -118,7 +118,7 @@ def _evaluate_single_opportunity(opportunity, account=None, positions=None):
             "symbol": opportunity.symbol,
             "orderSide": side_str,
             "quantity": safe_qty,
-            "executionType": "Limit",
+            "executionType": "Market",
             "entryPrice": entry_fmt,
             "guardianSL": f"{sl_pct:.1f}% ({sl_fmt})",
             "guardianTP": f"{tp_pct:.1f}% ({tp_fmt})",

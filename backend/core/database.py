@@ -52,6 +52,22 @@ def initialize_database() -> None:
     except Exception:
         pass
 
+    try:
+        connection.execute(
+            """
+            UPDATE trade_orders
+            SET option_symbol = NULL
+            WHERE option_symbol IS NOT NULL
+              AND (
+                symbol LIKE '%/%'
+                OR symbol = option_symbol
+                OR NOT (length(option_symbol) > 6 AND option_symbol GLOB '*[0-9]*')
+              )
+            """
+        )
+    except Exception:
+        pass
+
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS agent_logs (
